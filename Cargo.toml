@@ -1,0 +1,17 @@
+[package]
+name = "screenshot-uploader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+notify = "6"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls"] }
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

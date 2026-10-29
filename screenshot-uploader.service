@@ -1,0 +1,24 @@
+[Unit]
+Description=Screenshot uploader (PNG -> WebP + Discord webhook)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=hakergeniusz
+EnvironmentFile=/etc/screenshot-uploader.env
+ExecStart=/usr/local/bin/screenshot-uploader /home/hakergeniusz/Pictures/Screenshots
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the service can only write to the screenshots directory
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/hakergeniusz/Pictures/Screenshots
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
