@@ -12,7 +12,8 @@ fi
 sudo chmod 600 /etc/screenshot-uploader.env
 sudo chown root:root /etc/screenshot-uploader.env
 
-sudo install -Dm644 screenshot-uploader.service /etc/systemd/system/screenshot-uploader.service
+user="$(id -un)"
+sudo install -Dm644 screenshot-uploader.service "/etc/systemd/system/screenshot-uploader@.service"
 sudo systemctl daemon-reload
-sudo systemctl enable --now screenshot-uploader.service
-systemctl status screenshot-uploader.service --no-pager
+sudo systemctl enable --now "screenshot-uploader@${user}.service"
+systemctl status "screenshot-uploader@${user}.service" --no-pager

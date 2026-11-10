@@ -14,8 +14,62 @@ use reqwest::blocking::{multipart, Client};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
-const DEFAULT_DIR: &str = "/home/hakergeniusz/Pictures/Screenshots";
 const UPLOAD_ATTEMPTS: u32 = 3;
+
+fn default_screenshot_dir() -> PathBuf {
+    if let Some(dir) = env::var_os("SCREENSHOT_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    let pictures_dir = xdg_pictures_dir().unwrap_or_else(|| {
+        let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        home.join("Pictures")
+    });
+    pictures_dir.join("Screenshots")
+}
+
+fn xdg_pictures_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("XDG_PICTURES_DIR") {
+        return Some(expand_home(PathBuf::from(dir)));
+    }
+
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let user_dirs = config_home.join("user-dirs.dirs");
+    let contents = fs::read_to_string(user_dirs).ok()?;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if !line.starts_with("XDG_PICTURES_DIR=") {
+            continue;
+        }
+        let value = line.trim_start_matches("XDG_PICTURES_DIR=").trim();
+        let value = value.strip_prefix('"').unwrap_or(value);
+        let value = value.strip_suffix('"').unwrap_or(value);
+        if value.is_empty() {
+            return None;
+        }
+        return Some(expand_home(PathBuf::from(value)));
+    }
+
+    None
+}
+
+fn expand_home(path: PathBuf) -> PathBuf {
+    let Some(path_str) = path.to_str() else {
+        return path;
+    };
+    if path_str == "$HOME" {
+        return env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
+    }
+    if let Some(rest) = path_str.strip_prefix("$HOME/") {
+        return env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or(path);
+    }
+    path
+}
 
 fn main() -> Result<()> {
     let webhook = env::var("DISCORD_WEBHOOK_URL")
@@ -23,7 +77,7 @@ fn main() -> Result<()> {
     let dir = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DIR));
+        .unwrap_or_else(default_screenshot_dir);
 
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
@@ -174,4 +228,139 @@ fn upload(client: &Client, webhook: &str, content: &str, name: &str, png: &[u8])
         bail!("Discord returned {status}: {body}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        saved: Vec<(String, Option<OsString>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&str]) -> Self {
+            let lock = env_lock().lock().expect("env lock poisoned");
+            let saved = keys
+                .iter()
+                .map(|k| (k.to_string(), env::var_os(k)))
+                .collect();
+            Self { saved, _lock: lock }
+        }
+
+        fn set(&self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
+            env::set_var(key, value);
+        }
+
+        fn remove(&self, key: &str) {
+            env::remove_var(key);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(v) => env::set_var(&key, v),
+                    None => env::remove_var(&key),
+                }
+            }
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("png-to-webp-tests-{name}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn is_png_matches_case_insensitively() {
+        assert!(is_png(Path::new("shot.PNG")));
+        assert!(is_png(Path::new("/tmp/shot.png")));
+        assert!(!is_png(Path::new("shot.webp")));
+        assert!(!is_png(Path::new("shot")));
+    }
+
+    #[test]
+    fn expand_home_replaces_home_prefix() {
+        let guard = EnvGuard::new(&["HOME"]);
+        guard.set("HOME", "/tmp/test-home");
+
+        assert_eq!(expand_home(PathBuf::from("$HOME")), PathBuf::from("/tmp/test-home"));
+        assert_eq!(
+            expand_home(PathBuf::from("$HOME/Pictures")),
+            PathBuf::from("/tmp/test-home/Pictures")
+        );
+        assert_eq!(
+            expand_home(PathBuf::from("/absolute/path")),
+            PathBuf::from("/absolute/path")
+        );
+    }
+
+    #[test]
+    fn xdg_pictures_dir_prefers_env_var() {
+        let guard = EnvGuard::new(&["XDG_PICTURES_DIR", "XDG_CONFIG_HOME", "HOME"]);
+        guard.set("HOME", "/tmp/test-home");
+        guard.set("XDG_PICTURES_DIR", "$HOME/MyPictures");
+
+        assert_eq!(
+            xdg_pictures_dir(),
+            Some(PathBuf::from("/tmp/test-home/MyPictures"))
+        );
+    }
+
+    #[test]
+    fn xdg_pictures_dir_reads_user_dirs_file() {
+        let guard = EnvGuard::new(&["XDG_PICTURES_DIR", "XDG_CONFIG_HOME", "HOME"]);
+        guard.remove("XDG_PICTURES_DIR");
+        let home = temp_dir("home");
+        let config = home.join(".config");
+        fs::create_dir_all(&config).expect("config dir");
+        fs::write(
+            config.join("user-dirs.dirs"),
+            "XDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_PICTURES_DIR=\"$HOME/Images\"\n",
+        )
+        .expect("write user-dirs");
+        guard.set("HOME", &home);
+        guard.remove("XDG_CONFIG_HOME");
+
+        assert_eq!(xdg_pictures_dir(), Some(home.join("Images")));
+    }
+
+    #[test]
+    fn default_screenshot_dir_prefers_screenshot_dir_env() {
+        let guard = EnvGuard::new(&["SCREENSHOT_DIR", "XDG_PICTURES_DIR", "XDG_CONFIG_HOME", "HOME"]);
+        guard.set("SCREENSHOT_DIR", "/tmp/custom-shots");
+
+        assert_eq!(default_screenshot_dir(), PathBuf::from("/tmp/custom-shots"));
+    }
+
+    #[test]
+    fn default_screenshot_dir_uses_xdg_pictures_fallback() {
+        let guard = EnvGuard::new(&["SCREENSHOT_DIR", "XDG_PICTURES_DIR", "XDG_CONFIG_HOME", "HOME"]);
+        guard.remove("SCREENSHOT_DIR");
+        guard.remove("XDG_PICTURES_DIR");
+        guard.set("HOME", "/tmp/test-home");
+        guard.set("XDG_CONFIG_HOME", "/tmp/test-home/config-missing");
+
+        assert_eq!(
+            default_screenshot_dir(),
+            PathBuf::from("/tmp/test-home/Pictures/Screenshots")
+        );
+    }
 }
