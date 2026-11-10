@@ -5,9 +5,9 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=hakergeniusz
+User=%i
 EnvironmentFile=/etc/screenshot-uploader.env
-ExecStart=/usr/local/bin/screenshot-uploader /home/hakergeniusz/Pictures/Screenshots
+ExecStart=/usr/local/bin/screenshot-uploader
 Restart=on-failure
 RestartSec=5
 
@@ -16,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/hakergeniusz/Pictures/Screenshots
+ReadWritePaths=%h/Pictures/Screenshots
 ProtectKernelTunables=true
 ProtectControlGroups=true
 

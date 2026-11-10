@@ -14,8 +14,62 @@ use reqwest::blocking::{multipart, Client};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 
-const DEFAULT_DIR: &str = "/home/hakergeniusz/Pictures/Screenshots";
 const UPLOAD_ATTEMPTS: u32 = 3;
+
+fn default_screenshot_dir() -> PathBuf {
+    if let Some(dir) = env::var_os("SCREENSHOT_DIR") {
+        return PathBuf::from(dir);
+    }
+
+    let pictures_dir = xdg_pictures_dir().unwrap_or_else(|| {
+        let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        home.join("Pictures")
+    });
+    pictures_dir.join("Screenshots")
+}
+
+fn xdg_pictures_dir() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("XDG_PICTURES_DIR") {
+        return Some(expand_home(PathBuf::from(dir)));
+    }
+
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let user_dirs = config_home.join("user-dirs.dirs");
+    let contents = fs::read_to_string(user_dirs).ok()?;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if !line.starts_with("XDG_PICTURES_DIR=") {
+            continue;
+        }
+        let value = line.trim_start_matches("XDG_PICTURES_DIR=").trim();
+        let value = value.strip_prefix('"').unwrap_or(value);
+        let value = value.strip_suffix('"').unwrap_or(value);
+        if value.is_empty() {
+            return None;
+        }
+        return Some(expand_home(PathBuf::from(value)));
+    }
+
+    None
+}
+
+fn expand_home(path: PathBuf) -> PathBuf {
+    let Some(path_str) = path.to_str() else {
+        return path;
+    };
+    if path_str == "$HOME" {
+        return env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
+    }
+    if let Some(rest) = path_str.strip_prefix("$HOME/") {
+        return env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or(path);
+    }
+    path
+}
 
 fn main() -> Result<()> {
     let webhook = env::var("DISCORD_WEBHOOK_URL")
@@ -23,7 +77,7 @@ fn main() -> Result<()> {
     let dir = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DIR));
+        .unwrap_or_else(default_screenshot_dir);
 
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
